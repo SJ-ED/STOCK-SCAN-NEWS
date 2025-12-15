@@ -1,5 +1,7 @@
 streamlit
 feedparser
 pandas
+yfinance
 beautifulsoup4
+requests
 lxml
