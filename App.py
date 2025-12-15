@@ -2,167 +2,147 @@ import streamlit as st
 import feedparser
 import pandas as pd
 from datetime import datetime
-import time
+import urllib.parse
 
 # --- 頁面設定 ---
 st.set_page_config(
-    page_title="台股題材挖掘機",
-    page_icon="📈",
+    page_title="台股題材挖掘機 (Google引擎版)",
+    page_icon="🔥",
     layout="wide",
-    initial_sidebar_state="expanded"
 )
 
-# --- 自定義樣式 (CSS) ---
+# --- CSS 優化 ---
 st.markdown("""
     <style>
-    .big-font { font-size:20px !important; font-weight: bold; }
-    .highlight { color: #e74c3c; font-weight: bold; }
+    .big-font { font-size:18px !important; }
     div[data-testid="stDataFrame"] { width: 100%; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 新聞來源 (RSS) ---
-RSS_SOURCES = {
-    'Yahoo 股市 (頭條)': 'https://tw.stock.yahoo.com/rss?category=tw-market',
-    'MoneyDJ (即時)': 'https://www.moneydj.com/rss/newstitle.aspx?tp=a',
-    '鉅亨網 (頭條)': 'https://news.cnyes.com/rss/headline',
-    '聯合新聞網 (股市)': 'https://money.udn.com/rssfeed/news/1001/5590/5591?ch=money',
-    '中時電子報 (財經)': 'https://www.chinatimes.com/rss/realtimenews-finance.xml'
+# --- 關鍵字與預設設定 ---
+# 這裡將關鍵字分類，方便使用者一次選一組
+KEYWORD_GROUPS = {
+    '🔥 熱門題材': ['收購', '併購', '入股', '處分利益', '經營權'],
+    '💰 營收獲利': ['訂單', '大單', '急單', '轉單', '營收新高', '獲利新高', '三率三升'],
+    '🏭 產業動態': ['漲價', '調漲', '報價', '擴產', '新廠', '缺貨', '供不應求'],
+    '📈 股市訊號': ['法說', '庫藏股', '實施庫藏', '增資', '減資', '股利', '殖利率'],
+    '🤖 科技趨勢': ['AI', '伺服器', 'CPO', '散熱', '機器人', 'CoWoS', '先進封裝']
 }
 
-# --- 預設關鍵字 ---
-DEFAULT_KEYWORDS = [
-    '收購', '併購', '入股',
-    '訂單', '大單', '轉單', '急單',
-    '漲價', '調漲', '報價',
-    '擴產', '新廠', '動土',
-    '營收新高', '獲利新高', '三率三升',
-    '法說', '股利', '殖利率',
-    '處置', '注意股', '庫藏股'
+# 指定搜尋的新聞來源 (避免搜尋到部落格或內容農場)
+TARGET_SITES = [
+    'site:news.cnyes.com',       # 鉅亨網
+    'site:money.udn.com',        # 經濟日報
+    'site:tw.stock.yahoo.com',   # Yahoo股市
+    'site:ctee.com.tw',          # 工商時報
+    'site:bnext.com.tw',         # 數位時代
+    'site:technews.tw'           # 科技新報
 ]
 
-def parse_time(published_str):
-    """簡單的時間解析，失敗則回傳原字串"""
+def get_google_news_feed(keywords):
+    """
+    建立 Google News RSS 搜尋連結
+    """
+    # 組合關鍵字查詢：(關鍵字1 OR 關鍵字2)
+    kw_query = " OR ".join(keywords)
+    
+    # 組合網站來源查詢：(site:A OR site:B)
+    site_query = " OR ".join(TARGET_SITES)
+    
+    # 最終查詢字串：(訂單 OR 大單) AND (site:cnyes... OR ...) when:1d
+    # when:1d 代表只搜尋過去 24 小時 (確保新聞新鮮)
+    full_query = f"({kw_query}) AND ({site_query}) when:1d"
+    
+    # 進行 URL 編碼
+    encoded_query = urllib.parse.quote(full_query)
+    
+    # Google News RSS 格式
+    rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+    return rss_url
+
+def fetch_google_news(keywords):
+    if not keywords:
+        return []
+    
+    rss_url = get_google_news_feed(keywords)
+    
     try:
-        # 嘗試解析 RSS 的標準時間格式
-        dt = pd.to_datetime(published_str)
-        # 轉換為台灣時間 (假設 Server 是 UTC，簡單處理加8小時，或直接格式化)
-        # 這裡簡化處理，直接回傳易讀格式
-        return dt.strftime("%m-%d %H:%M")
-    except:
-        return published_str
-
-def fetch_news(selected_sources, keywords):
-    news_items = []
-    
-    status_text = st.sidebar.empty()
-    progress_bar = st.sidebar.progress(0)
-    
-    total_sources = len(selected_sources)
-    
-    for i, source_name in enumerate(selected_sources):
-        status_text.text(f"正在掃描: {source_name}...")
-        rss_url = RSS_SOURCES[source_name]
+        feed = feedparser.parse(rss_url)
+        news_items = []
         
-        try:
-            feed = feedparser.parse(rss_url)
-            for entry in feed.entries:
-                title = entry.title
-                summary = entry.summary if 'summary' in entry else ""
-                
-                # 關鍵字比對 (同時檢查標題與摘要)
-                matched = []
-                for kw in keywords:
-                    if kw in title or kw in summary:
-                        matched.append(kw)
-                
-                if matched:
-                    news_items.append({
-                        '發布時間': parse_time(entry.get('published', datetime.now().strftime("%Y-%m-%d %H:%M"))),
-                        '來源': source_name,
-                        '標題': title,
-                        '命中題材': ", ".join(matched),
-                        '連結': entry.link
-                    })
-        except Exception as e:
-            st.error(f"無法讀取 {source_name}: {e}")
+        for entry in feed.entries:
+            # 處理時間格式
+            pub_date = entry.published if 'published' in entry else ""
+            try:
+                # 嘗試將 Google 時間轉為 datetime 物件以便排序
+                dt_obj = pd.to_datetime(pub_date)
+                display_time = dt_obj.strftime("%m-%d %H:%M")
+            except:
+                display_time = pub_date
+
+            news_items.append({
+                '時間': display_time,
+                '標題': entry.title,
+                '連結': entry.link,
+                '來源機構': entry.source.title if 'source' in entry else "Google News",
+                '原始時間': dt_obj if 'dt_obj' in locals() else datetime.min # 用於排序
+            })
             
-        progress_bar.progress((i + 1) / total_sources)
-        
-    status_text.text("掃描完成！")
-    time.sleep(0.5)
-    status_text.empty()
-    progress_bar.empty()
-    
-    return news_items
+        return news_items
+    except Exception as e:
+        st.error(f"連線發生錯誤: {e}")
+        return []
 
-# --- 側邊欄控制區 ---
-st.sidebar.title("🔍 篩選設定")
+# --- 側邊欄控制 ---
+st.sidebar.header("🔍 搜尋設定")
 
-# 1. 關鍵字設定
+# 選擇題材群組
+selected_group = st.sidebar.selectbox("選擇題材類型", list(KEYWORD_GROUPS.keys()))
+default_kws = KEYWORD_GROUPS[selected_group]
+
+# 允許使用者增刪關鍵字
 user_keywords = st.sidebar.multiselect(
-    "監控關鍵字 (可自行新增)",
-    options=DEFAULT_KEYWORDS,
-    default=['收購', '訂單', '漲價', '營收新高', '擴產']
+    "細部調整關鍵字",
+    options=default_kws + ['台積電', '鴻海', '聯發科'], # 補充一些個股供選
+    default=default_kws
 )
 
-# 允許使用者輸入自定義關鍵字
-custom_kw = st.sidebar.text_input("新增自定義關鍵字 (按 Enter 加入)")
-if custom_kw and custom_kw not in user_keywords:
+# 自定義輸入
+custom_kw = st.sidebar.text_input("或輸入自訂關鍵字 (如：B100)")
+if custom_kw:
     user_keywords.append(custom_kw)
-    st.sidebar.info(f"已暫時加入: {custom_kw}")
 
-# 2. 來源設定
-selected_sources = st.sidebar.multiselect(
-    "新聞來源",
-    options=list(RSS_SOURCES.keys()),
-    default=list(RSS_SOURCES.keys())
-)
-
-# 3. 重新整理按鈕
-if st.sidebar.button("🔄 立即重新掃描", type="primary"):
-    st.rerun()
-
-st.sidebar.markdown("---")
-st.sidebar.markdown(f"最後更新: {datetime.now().strftime('%H:%M:%S')}")
+if st.sidebar.button("🚀 開始搜尋", type="primary"):
+    st.session_state['trigger_search'] = True
 
 # --- 主畫面 ---
-st.title("📈 盤中題材快篩儀表板")
+st.title(f"📰 台股新聞快搜：{selected_group}")
+st.caption("資料來源：Google News (鎖定鉅亨、聯合、工商、Yahoo等權威媒體)")
 
-if not user_keywords:
-    st.warning("⚠️ 請至少選擇一個關鍵字進行監控。")
-else:
-    with st.spinner('正在全網搜集資料中...'):
-        data = fetch_news(selected_sources, user_keywords)
-
+# 自動觸發或手動觸發
+if user_keywords:
+    with st.spinner('正在召喚 Google 搜尋引擎...'):
+        data = fetch_google_news(user_keywords)
+        
     if data:
         df = pd.DataFrame(data)
+        # 依照時間排序 (新的在上面)
+        df = df.sort_values(by='原始時間', ascending=False)
         
-        # 依照時間排序 (假設字串格式可排，若格式混亂可能不準確，但通常夠用)
-        df = df.sort_values(by="發布時間", ascending=False)
+        # 顯示結果
+        st.success(f"過去 24 小時內，找到 **{len(df)}** 則相關新聞")
         
-        # 顯示統計
-        st.success(f"共搜尋到 **{len(df)}** 則符合「{'、'.join(user_keywords)}」的新聞")
-        
-        # 使用 Streamlit Dataframe 顯示 (支援點擊連結)
         st.dataframe(
-            df,
+            df[['時間', '來源機構', '標題', '連結']],
             column_config={
-                "連結": st.column_config.LinkColumn(
-                    "閱讀全文",
-                    display_text="點擊前往"
-                ),
-                "標題": st.column_config.TextColumn(
-                    "新聞標題",
-                    width="large"
-                ),
-                "命中題材": st.column_config.TextColumn(
-                    "題材",
-                    width="medium"
-                ),
+                "連結": st.column_config.LinkColumn("新聞連結", display_text="前往閱讀"),
+                "標題": st.column_config.TextColumn("標題", width="large"),
             },
             hide_index=True,
             use_container_width=True
         )
     else:
-        st.info("💡 目前在選定的來源中，找不到符合關鍵字的新聞。休息一下吧！")
+        st.warning("🧐 過去 24 小時內，主要媒體沒有報導包含這些關鍵字的新聞。")
+        st.info("建議：嘗試更換「題材類型」或是增加更通用的關鍵字。")
+else:
+    st.info("👈 請在左側選擇關鍵字開始搜尋")
